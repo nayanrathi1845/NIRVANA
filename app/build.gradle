@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.nirvana.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.nirvana.app'
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // A fixed signing key, so a new build installs over the old one without uninstalling.
+    signingConfigs {
+        release {
+            storeFile file('nirvana.keystore')
+            storePassword 'nirvana123'
+            keyAlias 'nirvana'
+            keyPassword 'nirvana123'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
