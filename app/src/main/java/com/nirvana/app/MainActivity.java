@@ -238,7 +238,7 @@ public class MainActivity extends Activity {
         Button share = secondaryButton("Share to the group");
         share.setOnClickListener(v -> shareSummary());
         col.addView(share, lp(0, dp(10), 0, 0));
-        TextView hint = text("Send opens the NIRVANA page with your numbers filled in. Check them, pick your name and tap Save day.", 13, MUTED, false);
+        TextView hint = text("Send saves your day on the NIRVANA page. The first time, pick your name there and tap Save day. After that, one tap here saves it.", 13, MUTED, false);
         col.addView(hint, lp(0, dp(8), 0, 0));
         return col;
     }
