@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// NIRVANA database rules.
+// - Only signed-in members can see the league.
+// - You become a member by creating your profile with the league's invite code.
+// - Everyone can only create or change their own profile and their own days.
+// The real invite code replaces INVITE_CODE below when you paste these rules into Firebase.
+// It is kept out of this public repository on purpose.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function isMember() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function validProfile(d) {
+      return d.name is string && d.name.size() > 0 && d.name.size() <= 40
+        && d.baseMin is number && d.baseMin >= 1 && d.baseMin <= 1440
+        && d.baseOpens is number && d.baseOpens >= 0 && d.baseOpens <= 2000
+        && (!('audit' in d) || d.audit is map);
+    }
+    function validDay(d) {
+      return d.min is number && d.min >= 0 && d.min <= 1440
+        && d.opens is number && d.opens >= 0 && d.opens <= 5000
+        && d.focus is number && d.focus >= 0 && d.focus <= 6
+        && d.div is number && d.div >= 0 && d.div <= 6
+        && (!('note' in d) || (d.note is string && d.note.size() <= 280));
+    }
+
+    match /users/{uid} {
+      allow read: if isMember();
+      allow create: if isSelf(uid) && validProfile(request.resource.data)
+        && request.resource.data.joinCode == 'INVITE_CODE';
+      allow update: if isSelf(uid) && validProfile(request.resource.data)
+        && request.resource.data.joinCode == resource.data.joinCode;
+      allow delete: if false;
+
+      match /days/{day} {
+        allow read: if isMember();
+        allow create, update: if isSelf(uid) && isMember() && validDay(request.resource.data);
+        allow delete: if isSelf(uid);
+      }
+    }
+  }
+}

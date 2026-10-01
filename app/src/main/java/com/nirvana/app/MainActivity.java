@@ -32,10 +32,15 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
 
-    static final String DEFAULT_URL = "https://claude.ai/artifact/DVFhWr9bFHz81PwRcYBRgu";
+    static final String SITE = "https://nayanrathi1845.github.io/NIRVANA/";
 
     /** Package, label, counted by default. */
     static final String[][] APPS = {
@@ -71,11 +76,20 @@ public class MainActivity extends Activity {
 
     TextView scoreTotal, scoreBreakdown;
 
+    Firebase fb;
+    Firebase.Profile me;                 // your league profile, once loaded
+    boolean profileMissing;              // signed in, but hasn't joined on the website yet
+    boolean loadingProfile;
+    String profileError;
+    final ExecutorService io = Executors.newSingleThreadExecutor();
+    LinearLayout boardBox;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("nirvana", MODE_PRIVATE);
         reader = new UsageReader(this);
+        fb = new Firebase(prefs);
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(BG);
         sv.setFillViewport(true);
@@ -103,6 +117,14 @@ public class MainActivity extends Activity {
         TextView sub = text("Less scrolling, more living.", 14, MUTED, false);
         root.addView(sub, lp(0, dp(2), 0, dp(16)));
 
+        if (!fb.signedIn()) { root.addView(loginCard()); return; }
+        if (me == null) {
+            if (profileMissing) { root.addView(joinFirstCard()); return; }
+            root.addView(loadingCard());
+            loadProfile();
+            return;
+        }
+
         root.addView(dayToggle(), lp(0, 0, 0, dp(14)));
 
         if (!hasUsageAccess()) {
@@ -120,8 +142,10 @@ public class MainActivity extends Activity {
         root.addView(manualCard(), lp(0, dp(14), 0, 0));
         root.addView(scoreCard(), lp(0, dp(14), 0, 0));
         root.addView(actions(), lp(0, dp(14), 0, 0));
+        root.addView(boardCard(), lp(0, dp(14), 0, 0));
         root.addView(settingsCard(), lp(0, dp(22), 0, 0));
         updateScore();
+        loadBoard();
     }
 
     View dayToggle() {
@@ -189,7 +213,7 @@ public class MainActivity extends Activity {
                 stats.wakeMs > 0 ? "Woke " + clock(stats.wakeMs) : "No unlock after 4 am yet"), lp(0, dp(10), 0, 0));
         String nightNote;
         if (stats.sleepMs > 0) nightNote = "Slept " + clock(stats.sleepMs);
-        else if (dayOffset == 0) nightNote = "Known tomorrow morning. Tick it yourself on the page.";
+        else if (dayOffset == 0) nightNote = "Known tomorrow morning. Switch to Yesterday then and save again.";
         else nightNote = "No long screen-off found";
         c.addView(windowRow("Last hour before sleep", stats.night, nightNote), lp(0, dp(10), 0, 0));
         return c;
@@ -200,15 +224,7 @@ public class MainActivity extends Activity {
         c.addView(label("YOUR PART"));
         c.addView(stepper("45-min focus blocks", "10 pts each, max 2", true), lp(0, dp(8), 0, 0));
         c.addView(stepper("Diverse inputs", "Book, long read or podcast", false), lp(0, dp(12), 0, 0));
-        c.addView(divider(), lp(0, dp(14), 0, dp(10)));
-        c.addView(label("YOUR WEEK 0 BASELINE"));
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.addView(numberField("Minutes / day", "baseMin", 120), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        View gap = new View(this);
-        row.addView(gap, new LinearLayout.LayoutParams(dp(12), 1));
-        row.addView(numberField("Opens / day", "baseOpens", 40), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        c.addView(row, lp(0, dp(6), 0, 0));
+        c.addView(text("Your baseline: " + me.baseMin + " min · " + me.baseOpens + " opens a day. Change it on the website.", 13, MUTED, false), lp(0, dp(12), 0, 0));
         return c;
     }
 
@@ -232,13 +248,13 @@ public class MainActivity extends Activity {
     View actions() {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        Button send = primaryButton("Send to NIRVANA");
-        send.setOnClickListener(v -> sendToNirvana());
+        final Button send = primaryButton("Save to NIRVANA");
+        send.setOnClickListener(v -> saveToNirvana(send));
         col.addView(send);
         Button share = secondaryButton("Share to the group");
         share.setOnClickListener(v -> shareSummary());
         col.addView(share, lp(0, dp(10), 0, 0));
-        TextView hint = text("Send saves your day on NIRVANA in one tap. Your phone's browser needs to be signed in to claude.ai, and you need to have joined NIRVANA once.", 13, MUTED, false);
+        TextView hint = text("Save puts these numbers on the leaderboard straight away. Add your one-line takeaway on the website if you like; saving again here keeps it.", 13, MUTED, false);
         col.addView(hint, lp(0, dp(8), 0, 0));
         return col;
     }
@@ -265,10 +281,14 @@ public class MainActivity extends Activity {
         }
         c.addView(text("All three of you should tick the same apps.", 13, MUTED, false), lp(0, dp(6), 0, dp(12)));
 
-        c.addView(label("NIRVANA PAGE LINK"));
-        EditText url = input(prefs.getString("url", DEFAULT_URL), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        url.addTextChangedListener(new SimpleWatcher(s -> prefs.edit().putString("url", s.trim()).apply()));
-        c.addView(url, lp(0, dp(6), 0, 0));
+        c.addView(label("ACCOUNT"));
+        c.addView(text("Signed in as " + fb.email(), 14, INK, false), lp(0, dp(6), 0, dp(8)));
+        Button site = secondaryButton("Open the NIRVANA website");
+        site.setOnClickListener(v -> openSite());
+        c.addView(site);
+        Button out = secondaryButton("Sign out");
+        out.setOnClickListener(v -> { fb.signOut(); me = null; profileMissing = false; build(); });
+        c.addView(out, lp(0, dp(10), 0, 0));
         return c;
     }
 
@@ -350,34 +370,213 @@ public class MainActivity extends Activity {
 
     void updateScore() {
         if (stats == null || scoreTotal == null) return;
-        int baseMin = prefs.getInt("baseMin", 0), baseOpens = prefs.getInt("baseOpens", 0);
+        int baseMin = me.baseMin, baseOpens = me.baseOpens;
         Score s = Score.of(stats.minutes, stats.opens, stats.morning, stats.night, focus, div, baseMin, baseOpens);
         scoreTotal.setText(String.valueOf(s.total));
         String b = String.format(Locale.US,
                 "Time      %4.1f / 35\nOpens     %4.1f / 15\nProtected %4d / 10\nFocus     %4d / 20\nDiverse   %4d / 20%s",
                 s.time, s.opens, s.prot, s.focus, s.div, s.pen != 0 ? "\nPenalty    -15" : "");
-        if (baseMin == 0) b += "\n\nAdd your baseline above to score time and opens.";
         scoreBreakdown.setText(b);
     }
 
     // ---------- actions ----------
 
-    void sendToNirvana() {
-        long start = dayStart(dayOffset);
-        String hash = "#log-" + ymd(start) + "-" + stats.minutes + "-" + stats.opens + "-" + stats.morning + "-" + stats.night + "-" + focus + "-" + div;
-        String base = prefs.getString("url", DEFAULT_URL);
-        int h = base.indexOf('#');
-        if (h >= 0) base = base.substring(0, h);
+    // ---------- league (network) ----------
+
+    View loginCard() {
+        LinearLayout c = card();
+        c.addView(text("Sign in", 22, INK, true));
+        c.addView(text("Use the same email and password as the NIRVANA website. New here? Create your account and join the league on the website first.", 14, MUTED, false), lp(0, dp(6), 0, dp(14)));
+        c.addView(text("Email", 13, MUTED, false));
+        final EditText email = input(fb.email(), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        c.addView(email, lp(0, dp(4), 0, dp(10)));
+        c.addView(text("Password", 13, MUTED, false));
+        final EditText pw = input("", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        c.addView(pw, lp(0, dp(4), 0, dp(10)));
+        final TextView err = text("", 14, BAD, false);
+        c.addView(err, lp(0, 0, 0, dp(8)));
+        final Button go = primaryButton("Sign in");
+        go.setOnClickListener(v -> {
+            final String e = email.getText().toString().trim(), p = pw.getText().toString();
+            if (e.isEmpty() || p.isEmpty()) { err.setText("Enter your email and password."); return; }
+            go.setEnabled(false);
+            go.setText("Signing in…");
+            io.execute(() -> {
+                try {
+                    fb.signIn(e, p);
+                    runOnUiThread(() -> { me = null; profileMissing = false; build(); });
+                } catch (Firebase.Problem ex) {
+                    runOnUiThread(() -> { err.setText(ex.getMessage()); go.setEnabled(true); go.setText("Sign in"); });
+                }
+            });
+        });
+        c.addView(go);
+        Button site = secondaryButton("Create an account on the website");
+        site.setOnClickListener(v -> openSite());
+        c.addView(site, lp(0, dp(10), 0, 0));
+        return c;
+    }
+
+    View loadingCard() {
+        LinearLayout c = card();
+        c.addView(text(profileError != null ? profileError : "Opening your league…", 16, profileError != null ? BAD : MUTED, false));
+        if (profileError != null) {
+            Button retry = primaryButton("Try again");
+            retry.setOnClickListener(v -> { profileError = null; build(); });
+            c.addView(retry, lp(0, dp(12), 0, 0));
+        }
+        return c;
+    }
+
+    View joinFirstCard() {
+        LinearLayout c = card();
+        c.addView(text("Join the league first", 20, INK, true));
+        c.addView(text("You're signed in as " + fb.email() + ", but you haven't joined NIRVANA yet. Open the website, sign in, and enter the invite code, your name and your baseline. Then come back here.", 14, MUTED, false), lp(0, dp(6), 0, dp(14)));
+        Button site = primaryButton("Open the website");
+        site.setOnClickListener(v -> openSite());
+        c.addView(site);
+        Button again = secondaryButton("I've joined, check again");
+        again.setOnClickListener(v -> { profileMissing = false; build(); });
+        c.addView(again, lp(0, dp(10), 0, 0));
+        Button out = secondaryButton("Sign out");
+        out.setOnClickListener(v -> { fb.signOut(); profileMissing = false; build(); });
+        c.addView(out, lp(0, dp(10), 0, 0));
+        return c;
+    }
+
+    void loadProfile() {
+        if (loadingProfile || profileError != null) return;
+        loadingProfile = true;
+        io.execute(() -> {
+            try {
+                Firebase.Profile p = fb.myProfile();
+                runOnUiThread(() -> { loadingProfile = false; me = p; profileMissing = (p == null); build(); });
+            } catch (Firebase.Problem ex) {
+                runOnUiThread(() -> {
+                    loadingProfile = false;
+                    if (ex.status == 401) { fb.signOut(); build(); return; }
+                    profileError = ex.getMessage();
+                    build();
+                });
+            }
+        });
+    }
+
+    void saveToNirvana(final Button btn) {
+        final String date = isoDate(dayStart(dayOffset));
+        final Map<String, Object> v = new HashMap<>();
+        v.put("date", date);
+        v.put("min", stats.minutes);
+        v.put("opens", stats.opens);
+        v.put("shot", true);                       // read straight from the phone, so it counts as proof
+        v.put("focus", focus);
+        v.put("div", div);
+        v.put("source", "app");
+        v.put("updatedAt", System.currentTimeMillis());
+        if (stats.morning != UsageReader.UNKNOWN) v.put("am", stats.morning == UsageReader.KEPT);
+        if (stats.night != UsageReader.UNKNOWN) v.put("pm", stats.night == UsageReader.KEPT);
+        btn.setEnabled(false);
+        btn.setText("Saving…");
+        io.execute(() -> {
+            try {
+                fb.saveDay(date, v);
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    btn.setText("Saved ✓  Save again");
+                    Toast.makeText(this, "Saved " + prettyDate(dayStart(dayOffset)) + " to NIRVANA", Toast.LENGTH_SHORT).show();
+                    loadBoard();
+                });
+            } catch (Firebase.Problem ex) {
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    btn.setText("Save to NIRVANA");
+                    Toast.makeText(this, ex.getMessage(), Toast.LENGTH_LONG).show();
+                    if (ex.status == 401) { fb.signOut(); me = null; build(); }
+                });
+            }
+        });
+    }
+
+    View boardCard() {
+        LinearLayout c = card();
+        c.addView(label(dayOffset == 0 ? "TODAY'S STANDINGS" : "YESTERDAY'S STANDINGS"));
+        boardBox = new LinearLayout(this);
+        boardBox.setOrientation(LinearLayout.VERTICAL);
+        boardBox.addView(text("Loading…", 14, MUTED, false));
+        c.addView(boardBox, lp(0, dp(8), 0, 0));
+        return c;
+    }
+
+    static class Row { String name; int score; int min; boolean logged; boolean mine; }
+
+    void loadBoard() {
+        final LinearLayout box = boardBox;
+        if (box == null) return;
+        final String date = isoDate(dayStart(dayOffset));
+        final String myUid = fb.uid();
+        io.execute(() -> {
+            try {
+                Map<String, Firebase.Profile> members = fb.members();
+                final List<Row> rows = new ArrayList<>();
+                for (Firebase.Profile p : members.values()) {
+                    Row r = new Row();
+                    r.name = p.name;
+                    r.mine = p.uid.equals(myUid);
+                    Map<String, Object> d = fb.day(p.uid, date);
+                    if (d != null) {
+                        r.logged = true;
+                        r.min = Firebase.asInt(d.get("min"));
+                        r.score = Score.ofDay(r.min, Firebase.asInt(d.get("opens")), Firebase.asBool(d.get("shot")),
+                                Firebase.asBool(d.get("am")), Firebase.asBool(d.get("pm")),
+                                Firebase.asInt(d.get("focus")), Firebase.asInt(d.get("div")), p.baseMin, p.baseOpens).total;
+                    }
+                    rows.add(r);
+                }
+                rows.sort((a, b) -> {
+                    if (a.logged != b.logged) return a.logged ? -1 : 1;
+                    if (a.score != b.score) return b.score - a.score;
+                    return a.min - b.min;
+                });
+                runOnUiThread(() -> showBoard(box, rows));
+            } catch (Firebase.Problem ex) {
+                runOnUiThread(() -> { box.removeAllViews(); box.addView(text(ex.getMessage(), 14, BAD, false)); });
+            }
+        });
+    }
+
+    void showBoard(LinearLayout box, List<Row> rows) {
+        box.removeAllViews();
+        int pos = 0;
+        for (Row r : rows) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(8), 0, dp(8));
+            boolean win = r.logged && pos == 0;
+            String place = r.logged ? String.valueOf(++pos) : "–";
+            row.addView(text(place, 18, win ? GOLD : MUTED, true), new LinearLayout.LayoutParams(dp(30), LinearLayout.LayoutParams.WRAP_CONTENT));
+            String who = r.name + (r.mine ? " (you)" : "");
+            TextView name = text(who + (r.logged ? "  ·  " + r.min + " min" : "  ·  not logged"), 15, INK, r.mine);
+            row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            row.addView(text(r.logged ? String.valueOf(r.score) : "", 20, win ? GOLD : INK, true));
+            box.addView(row);
+        }
+        if (rows.isEmpty()) box.addView(text("No members yet.", 14, MUTED, false));
+    }
+
+    void openSite() {
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(base + hash)));
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(SITE)));
         } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, "No browser found to open NIRVANA", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "No browser found. Open " + SITE, Toast.LENGTH_LONG).show();
         }
     }
 
+    static String isoDate(long ms) { return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(ms); }
+
     void shareSummary() {
         long start = dayStart(dayOffset);
-        int baseMin = prefs.getInt("baseMin", 0), baseOpens = prefs.getInt("baseOpens", 0);
+        int baseMin = me.baseMin, baseOpens = me.baseOpens;
         Score s = Score.of(stats.minutes, stats.opens, stats.morning, stats.night, focus, div, baseMin, baseOpens);
         StringBuilder sb = new StringBuilder();
         sb.append("NIRVANA · ").append(prettyDate(start)).append("\n");

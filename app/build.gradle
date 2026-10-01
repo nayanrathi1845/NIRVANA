@@ -10,8 +10,8 @@ android {
         applicationId 'com.nirvana.app'
         minSdk 28
         targetSdk 34
-        versionCode 3
-        versionName '1.2'
+        versionCode 4
+        versionName '2.0'
     }
 
     // A fixed signing key, so a new build installs over the old one without uninstalling.

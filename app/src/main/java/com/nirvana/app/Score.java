@@ -23,4 +23,15 @@ public final class Score {
         s.total = (int) Math.max(0L, Math.round(s.time + s.opens + s.prot + s.focus + s.div + s.pen));
         return s;
     }
+
+    /** Scores a day as saved in the league, where "shot" means proof was given; without it time and opens score 0. */
+    public static Score ofDay(int minutes, int opens, boolean shot, boolean am, boolean pm, int focus, int div, int baseMin, int baseOpens) {
+        Score s = of(minutes, opens, am ? UsageReader.KEPT : UsageReader.BROKEN, pm ? UsageReader.KEPT : UsageReader.BROKEN, focus, div, baseMin, baseOpens);
+        if (!shot) {
+            s.time = 0;
+            s.opens = 0;
+            s.total = (int) Math.max(0L, Math.round(s.prot + s.focus + s.div + s.pen));
+        }
+        return s;
+    }
 }
